@@ -17,6 +17,7 @@ spec:
         {{- include "openstack-manila-csi.controllerplugin.labels" .  | nindent 8 }}
     spec:
       serviceAccountName: {{ include "openstack-manila-csi.serviceAccountName.controllerplugin" . }}
+      dnsPolicy: {{ .Values.controllerplugin.dnsPolicy | default "Default" }}
       containers:
         {{- range .Values.shareProtocols }}
         - name: {{ .protocolSelector | lower }}-provisioner

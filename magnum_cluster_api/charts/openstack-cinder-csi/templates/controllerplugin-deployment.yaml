@@ -29,6 +29,7 @@ spec:
         {{- include "cinder-csi.controllerplugin.podAnnotations" . | nindent 8 }}
     spec:
       serviceAccount: csi-cinder-controller-sa
+      dnsPolicy: {{ .Values.csi.plugin.controllerPlugin.dnsPolicy | default "Default" }}
       securityContext:
         {{- toYaml .Values.csi.plugin.controllerPlugin.podSecurityContext | nindent 8 }}
       containers:
