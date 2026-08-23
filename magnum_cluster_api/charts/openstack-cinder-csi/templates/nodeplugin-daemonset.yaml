@@ -22,7 +22,7 @@ spec:
     spec:
       serviceAccount: csi-cinder-node-sa
       hostNetwork: true
-      dnsPolicy: {{ .Values.csi.plugin.nodePlugin.dnsPolicy }}
+      dnsPolicy: {{ .Values.csi.plugin.nodePlugin.dnsPolicy | default "Default" }}
       containers:
         - name: node-driver-registrar
           securityContext:

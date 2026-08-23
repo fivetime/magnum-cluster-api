@@ -75,7 +75,11 @@ csi:
         mountPath: /etc/kubernetes
         readOnly: true
     nodePlugin:
-      dnsPolicy: ClusterFirstWithHostNet
+      # Default = the node's resolv.conf. ClusterFirstWithHostNet would route
+      # through the cluster's own CoreDNS, which is authoritative for
+      # cluster.local and never forwards -- so OpenStack endpoints published
+      # under that domain are NXDOMAIN here.
+      dnsPolicy: Default
       # Optional additional annotations to add to the nodePlugin Pods.
       podAnnotations: {}
       # Optional additional labels to add to the nodePlugin Pods.

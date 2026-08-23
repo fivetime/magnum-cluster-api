@@ -16,7 +16,7 @@ spec:
     spec:
       serviceAccountName: {{ include "openstack-manila-csi.serviceAccountName.nodeplugin" . }}
       hostNetwork: true
-      dnsPolicy: ClusterFirstWithHostNet
+      dnsPolicy: {{ .Values.nodeplugin.dnsPolicy | default "Default" }}
       containers:
         {{- range .Values.shareProtocols }}
         - name: {{ .protocolSelector | lower }}-registrar
