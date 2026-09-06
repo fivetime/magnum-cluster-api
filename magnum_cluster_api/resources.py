@@ -56,6 +56,29 @@ AUTOSCALE_ANNOTATION_MAX = "cluster.x-k8s.io/cluster-api-autoscaler-node-group-m
 
 DEFAULT_POD_CIDR = "10.100.0.0/16"
 
+# Container runtime handlers that openstack-magnum-images bakes into the node
+# image, as a containerd handler name in /etc/containerd/conf.d.
+#
+# The image can only ship the node-side half. A RuntimeClass is a cluster-scoped
+# object, and the RuntimeClass admission controller resolves it before the pod is
+# ever persisted, so without an object naming the handler a tenant writing
+# `runtimeClassName: gvisor` gets a Forbidden, not a scheduling failure. Nothing
+# else creates one, so the driver does.
+#
+# Created unconditionally, for every cluster. This is usability, not a boundary:
+# the worker nodes belong to the tenant, who can add handlers and RuntimeClasses
+# with a privileged DaemonSet whatever we do here. Gating it behind a label would
+# only make the supported path harder to find.
+#
+# Keep this in step with the image: a RuntimeClass whose handler is missing on the
+# node admits the pod and then fails it at container creation, which is a worse
+# error than the Forbidden it replaces. That is also why this is a subset of what
+# the image registers - the kata element also registers kata-dragonball,
+# kata-qemu-runtime-rs and kata-clh-runtime-rs, which are not created here
+# because they have not been verified on these nodes. A tenant who wants one can
+# create the RuntimeClass themselves; the handler is already there.
+NODE_IMAGE_RUNTIME_HANDLERS = ("gvisor", "kata-qemu", "kata-clh")
+
 
 class ClusterAutoscalerHelmRelease:
     def __init__(self, api, cluster) -> None:
@@ -258,6 +281,23 @@ class CloudProviderClusterResourcesSecret(ClusterBase):
                         },
                     }
                 ),
+            },
+        }
+
+        data = {
+            **data,
+            **{
+                f"runtimeclass-{handler}.yaml": yaml.dump(
+                    {
+                        "apiVersion": objects.RuntimeClass.version,
+                        "kind": objects.RuntimeClass.kind,
+                        "metadata": {
+                            "name": handler,
+                        },
+                        "handler": handler,
+                    }
+                )
+                for handler in NODE_IMAGE_RUNTIME_HANDLERS
             },
         }
 

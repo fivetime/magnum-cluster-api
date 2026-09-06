@@ -290,3 +290,9 @@ class StorageClass(pykube.objects.APIObject):
     version = "storage.k8s.io/v1"
     endpoint = "storageclasses"
     kind = "StorageClass"
+
+
+class RuntimeClass(pykube.objects.APIObject):
+    version = "node.k8s.io/v1"
+    endpoint = "runtimeclasses"
+    kind = "RuntimeClass"
