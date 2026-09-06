@@ -70,14 +70,28 @@ DEFAULT_POD_CIDR = "10.100.0.0/16"
 # with a privileged DaemonSet whatever we do here. Gating it behind a label would
 # only make the supported path harder to find.
 #
-# Keep this in step with the image: a RuntimeClass whose handler is missing on the
-# node admits the pod and then fails it at container creation, which is a worse
-# error than the Forbidden it replaces. That is also why this is a subset of what
-# the image registers - the kata element also registers kata-dragonball,
-# kata-qemu-runtime-rs and kata-clh-runtime-rs, which are not created here
-# because they have not been verified on these nodes. A tenant who wants one can
-# create the RuntimeClass themselves; the handler is already there.
-NODE_IMAGE_RUNTIME_HANDLERS = ("gvisor", "kata-qemu", "kata-clh")
+# Only handlers that have been seen to run a pod on these nodes. A RuntimeClass
+# whose handler cannot start admits the pod and then fails it at container
+# creation, which is a far worse error than the Forbidden that not creating it
+# produces - so this list is deliberately a subset of what the image registers.
+#
+# kata-qemu is the omission that matters, because it is the name every tutorial
+# uses. Measured 2026-09-06 on a Magnum node here, QEMU dies in firmware before
+# the guest agent ever comes up:
+#
+#     qemu stderr: "error: kvm run failed Bad address"
+#     EIP=000f070e CR0=00000011 EFER=0      (still in SeaBIOS)
+#
+# and the shim then reports the symptom, a vsock connect timeout. This is not
+# nested virtualisation failing in general - cloud-hypervisor and Dragonball
+# boot the kernel directly, skip firmware, and run a real guest at 6.18.35 on
+# the same nodes. It is the SeaBIOS path specifically, three levels deep.
+#
+# So kata-clh is the VM-isolation entry a tenant gets by default. The qemu
+# handlers stay registered on the node, so anyone who wants to retry them - on
+# different hardware, or after the compute CPU model changes - only has to
+# create the RuntimeClass themselves.
+NODE_IMAGE_RUNTIME_HANDLERS = ("gvisor", "kata-clh", "kata-dragonball")
 
 
 class ClusterAutoscalerHelmRelease:
