@@ -76,21 +76,24 @@ DEFAULT_POD_CIDR = "10.100.0.0/16"
 # produces - so this list is deliberately a subset of what the image registers.
 #
 # kata-qemu is the omission that matters, because it is the name every tutorial
-# uses. Measured 2026-09-06 on a Magnum node here, QEMU dies in firmware before
-# the guest agent ever comes up:
+# uses. Measured 2026-09-06: with kata 4.1.0's runtime-rs it does not start.
+# QEMU dies before the guest agent exists,
 #
 #     qemu stderr: "error: kvm run failed Bad address"
-#     EIP=000f070e CR0=00000011 EFER=0      (still in SeaBIOS)
 #
-# and the shim then reports the symptom, a vsock connect timeout. This is not
-# nested virtualisation failing in general - cloud-hypervisor and Dragonball
-# boot the kernel directly, skip firmware, and run a real guest at 6.18.35 on
-# the same nodes. It is the SeaBIOS path specifically, three levels deep.
+# and the shim reports only the symptom, a vsock connect timeout.
 #
-# So kata-clh is the VM-isolation entry a tenant gets by default. The qemu
-# handlers stay registered on the node, so anyone who wants to retry them - on
-# different hardware, or after the compute CPU model changes - only has to
-# create the RuntimeClass themselves.
+# This is NOT nested virtualisation failing, and it is not the firmware path:
+# kata's own qemu-system-x86_64 11.0.1, run by hand with -machine q35,accel=kvm,
+# boots SeaBIOS to "No bootable device" both inside a Magnum node and one level
+# shallower. Same binary, same command, only the depth differs. Nor is
+# runtime-rs broken as a whole - clh and Dragonball run a real 6.18.35 guest on
+# these same nodes. It is specifically how runtime-rs launches QEMU in 4.1.0.
+#
+# The Go runtime's kata-qemu works fine on other nodes in this cloud, so the
+# node image is expected to grow kata-go-static and register kata-qemu on the
+# Go shim, at which point kata-qemu belongs in this list. Until that is built
+# and measured, it stays out.
 NODE_IMAGE_RUNTIME_HANDLERS = ("gvisor", "kata-clh", "kata-dragonball")
 
 
