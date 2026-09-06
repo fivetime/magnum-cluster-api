@@ -73,28 +73,28 @@ DEFAULT_POD_CIDR = "10.100.0.0/16"
 # Only handlers that have been seen to run a pod on these nodes. A RuntimeClass
 # whose handler cannot start admits the pod and then fails it at container
 # creation, which is a far worse error than the Forbidden that not creating it
-# produces - so this list is deliberately a subset of what the image registers.
+# produces - so this list is what was measured, not what the image registers.
 #
-# kata-qemu is the omission that matters, because it is the name every tutorial
-# uses. Measured 2026-09-06: with kata 4.1.0's runtime-rs it does not start.
-# QEMU dies before the guest agent exists,
+# Measured 2026-09-06 on a Magnum cluster, one pod per handler, reading
+# /proc/version: everything below boots a real 6.18.35 guest, gvisor reports
+# 4.19.0-gvisor, and a pod with no runtimeClassName stays on the node's own
+# 6.8.0 kernel under crun.
 #
-#     qemu stderr: "error: kvm run failed Bad address"
-#
-# and the shim reports only the symptom, a vsock connect timeout.
-#
-# This is NOT nested virtualisation failing, and it is not the firmware path:
-# kata's own qemu-system-x86_64 11.0.1, run by hand with -machine q35,accel=kvm,
-# boots SeaBIOS to "No bootable device" both inside a Magnum node and one level
-# shallower. Same binary, same command, only the depth differs. Nor is
-# runtime-rs broken as a whole - clh and Dragonball run a real 6.18.35 guest on
-# these same nodes. It is specifically how runtime-rs launches QEMU in 4.1.0.
-#
-# The Go runtime's kata-qemu works fine on other nodes in this cloud, so the
-# node image is expected to grow kata-go-static and register kata-qemu on the
-# Go shim, at which point kata-qemu belongs in this list. Until that is built
-# and measured, it stays out.
-NODE_IMAGE_RUNTIME_HANDLERS = ("gvisor", "kata-clh", "kata-dragonball")
+# kata-qemu-runtime-rs is the one omission. It is the Rust runtime's QEMU path,
+# and it still cannot bring up its guest agent after the node-image fix that
+# made every other kata handler work - the node's /dev/shm defaulted to half of
+# RAM, which is smaller than the 2048 MB of guest memory kata backs with a file
+# there, so QEMU faulted in firmware with "kvm run failed Bad address". That was
+# a node problem, not a runtime one, and it is fixed in the image. What is left
+# is specific to runtime-rs with QEMU; kata-qemu on the Go runtime, which the
+# image also ships, works.
+NODE_IMAGE_RUNTIME_HANDLERS = (
+    "gvisor",
+    "kata-qemu",
+    "kata-clh",
+    "kata-clh-runtime-rs",
+    "kata-dragonball",
+)
 
 
 class ClusterAutoscalerHelmRelease:
