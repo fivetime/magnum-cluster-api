@@ -70,28 +70,28 @@ DEFAULT_POD_CIDR = "10.100.0.0/16"
 # with a privileged DaemonSet whatever we do here. Gating it behind a label would
 # only make the supported path harder to find.
 #
-# Only handlers that have been seen to run a pod on these nodes. A RuntimeClass
-# whose handler cannot start admits the pod and then fails it at container
-# creation, which is a far worse error than the Forbidden that not creating it
-# produces - so this list is what was measured, not what the image registers.
+# Every handler the node image registers. All six were measured on a cluster
+# built from that image with nothing changed by hand, one pod per handler
+# reading /proc/version, twice: gvisor reports 4.19.0-gvisor, the five kata
+# handlers each boot a real 6.18.35 guest, and a pod with no runtimeClassName
+# stays on the node's own 6.8.0 kernel under crun.
 #
-# Measured 2026-09-06 on a Magnum cluster, one pod per handler, reading
-# /proc/version: everything below boots a real 6.18.35 guest, gvisor reports
-# 4.19.0-gvisor, and a pod with no runtimeClassName stays on the node's own
-# 6.8.0 kernel under crun.
+# This list was twice a subset, and both times the runtime was blamed for a node
+# fault. Every kata-qemu sandbox failed with "kvm run failed Bad address" because
+# a container's own 64 MiB /dev/shm propagates into the host mount namespace and
+# is mounted over the host's, so the file kata backs 2048 MB of guest memory with
+# could not be backed. Sizing /dev/shm did not help - it sizes the mount
+# underneath. The node image now keeps /dev/shm private, and nothing is left out.
 #
-# kata-qemu-runtime-rs is the one omission. It is the Rust runtime's QEMU path,
-# and it still cannot bring up its guest agent after the node-image fix that
-# made every other kata handler work - the node's /dev/shm defaulted to half of
-# RAM, which is smaller than the 2048 MB of guest memory kata backs with a file
-# there, so QEMU faulted in firmware with "kvm run failed Bad address". That was
-# a node problem, not a runtime one, and it is fixed in the image. What is left
-# is specific to runtime-rs with QEMU; kata-qemu on the Go runtime, which the
-# image also ships, works.
+# The rule this list follows has not changed: it names what was measured, not
+# what the image registers, because a RuntimeClass whose handler cannot start
+# admits the pod and then fails it at container creation - a far worse error than
+# the Forbidden that omitting it produces. Today those two sets are the same.
 NODE_IMAGE_RUNTIME_HANDLERS = (
     "gvisor",
     "kata-qemu",
     "kata-clh",
+    "kata-qemu-runtime-rs",
     "kata-clh-runtime-rs",
     "kata-dragonball",
 )
