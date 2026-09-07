@@ -382,40 +382,70 @@ class CloudProviderClusterResourcesSecret(ClusterBase):
                     )
                 },
             }
-            # NOTE: We only create StorageClasses if share_network_id specified.
-            if share_network_id:
-                data = {
-                    **data,
-                    **{
-                        f"storageclass-share-{st.name}.yaml": yaml.dump(
-                            {
-                                "apiVersion": objects.StorageClass.version,
-                                "allowVolumeExpansion": True,
-                                "kind": objects.StorageClass.kind,
-                                "metadata": {
-                                    "name": "share-%s"
-                                    % utils.convert_to_rfc1123(st.name),
-                                },
-                                "provisioner": "nfs.manila.csi.openstack.org",
-                                "parameters": {
-                                    "type": st.name,
-                                    "shareNetworkID": share_network_id,
-                                    "csi.storage.k8s.io/provisioner-secret-name": "csi-manila-secrets",
-                                    "csi.storage.k8s.io/provisioner-secret-namespace": "kube-system",
-                                    "csi.storage.k8s.io/controller-expand-secret-name": "csi-manila-secrets",
-                                    "csi.storage.k8s.io/controller-expand-secret-namespace": "kube-system",
-                                    "csi.storage.k8s.io/node-stage-secret-name": "csi-manila-secrets",
-                                    "csi.storage.k8s.io/node-stage-secret-namespace": "kube-system",
-                                    "csi.storage.k8s.io/node-publish-secret-name": "csi-manila-secrets",
-                                    "csi.storage.k8s.io/node-publish-secret-namespace": "kube-system",
-                                },
-                                "reclaimPolicy": "Delete",
-                                "volumeBindingMode": "Immediate",
-                            }
-                        )
-                        for st in share_types
-                    },
-                }
+            # A share type needs a share network only when the driver handles
+            # share servers. With DHSS=False - CephFS and the NFS backends
+            # generally - Manila puts the share on a network it already owns and
+            # shareNetworkID is neither required nor meaningful.
+            #
+            # This used to create no StorageClass at all unless the cluster
+            # carried a manila_csi_share_network_id label, which meant that on a
+            # DHSS=False cloud the Manila CSI plugin was installed, running, and
+            # unusable: no StorageClass, so no RWX, while every component
+            # reported healthy. That is the same shape as a RuntimeClass whose
+            # handler is missing - a capability that looks delivered and is not.
+            #
+            # A DHSS=True type genuinely cannot be provisioned without a share
+            # network, so those are still left out when the label is absent.
+            # Publishing them anyway would only move the failure from "no
+            # StorageClass" to "a StorageClass whose PVCs never bind".
+            def _needs_share_network(share_type):
+                specs = getattr(share_type, "extra_specs", None) or {}
+                return str(
+                    specs.get("driver_handles_share_servers", "")
+                ).lower() == "true"
+
+            usable_share_types = [
+                st
+                for st in share_types
+                if share_network_id or not _needs_share_network(st)
+            ]
+
+            data = {
+                **data,
+                **{
+                    f"storageclass-share-{st.name}.yaml": yaml.dump(
+                        {
+                            "apiVersion": objects.StorageClass.version,
+                            "allowVolumeExpansion": True,
+                            "kind": objects.StorageClass.kind,
+                            "metadata": {
+                                "name": "share-%s"
+                                % utils.convert_to_rfc1123(st.name),
+                            },
+                            "provisioner": "nfs.manila.csi.openstack.org",
+                            "parameters": {
+                                "type": st.name,
+                                **(
+                                    {"shareNetworkID": share_network_id}
+                                    if share_network_id
+                                    else {}
+                                ),
+                                "csi.storage.k8s.io/provisioner-secret-name": "csi-manila-secrets",
+                                "csi.storage.k8s.io/provisioner-secret-namespace": "kube-system",
+                                "csi.storage.k8s.io/controller-expand-secret-name": "csi-manila-secrets",
+                                "csi.storage.k8s.io/controller-expand-secret-namespace": "kube-system",
+                                "csi.storage.k8s.io/node-stage-secret-name": "csi-manila-secrets",
+                                "csi.storage.k8s.io/node-stage-secret-namespace": "kube-system",
+                                "csi.storage.k8s.io/node-publish-secret-name": "csi-manila-secrets",
+                                "csi.storage.k8s.io/node-publish-secret-namespace": "kube-system",
+                            },
+                            "reclaimPolicy": "Delete",
+                            "volumeBindingMode": "Immediate",
+                        }
+                    )
+                    for st in usable_share_types
+                },
+            }
 
         return {
             "type": "addons.cluster.x-k8s.io/resource-set",
