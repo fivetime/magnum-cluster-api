@@ -329,6 +329,14 @@ pub static KUBEADM_CONFIG_TEMPLATE: LazyLock<KubeadmConfigTemplate> =
                         encoding: Some(KubeadmConfigTemplateTemplateSpecFilesEncoding::Base64),
                         ..Default::default()
                     }]),
+                    // Present and empty on purpose. Two features now write
+                    // into this list, and a JSON patch cannot append to a list
+                    // that does not exist - so without this each would have to
+                    // replace the whole list, and whichever CAPI applied last
+                    // would silently drop the other's commands. Feature order
+                    // comes from `inventory::iter`, which is link order and
+                    // not something to rely on.
+                    pre_kubeadm_commands: Some(vec![]),
                     join_configuration: Some(KubeadmConfigTemplateTemplateSpecJoinConfiguration {
                         node_registration: Some(
                             KubeadmConfigTemplateTemplateSpecJoinConfigurationNodeRegistration {

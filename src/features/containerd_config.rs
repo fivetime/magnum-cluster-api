@@ -116,10 +116,21 @@ impl ClusterFeaturePatches for Feature {
                                 }),
                                 ..Default::default()
                             },
+                            // Appended, not assigned. Replacing the whole list
+                            // discards whatever another feature put there, and
+                            // which one CAPI applies last is link order. The
+                            // base KubeadmConfigTemplate carries an empty list
+                            // so that "-" has something to append to.
                             ClusterClassPatchesDefinitionsJsonPatches {
                                 op: "add".into(),
-                                path: "/spec/template/spec/preKubeadmCommands".into(),
-                                value: Some(vec!["systemctl daemon-reload", "systemctl restart containerd"].into()),
+                                path: "/spec/template/spec/preKubeadmCommands/-".into(),
+                                value: Some("systemctl daemon-reload".into()),
+                                ..Default::default()
+                            },
+                            ClusterClassPatchesDefinitionsJsonPatches {
+                                op: "add".into(),
+                                path: "/spec/template/spec/preKubeadmCommands/-".into(),
+                                value: Some("systemctl restart containerd".into()),
                                 ..Default::default()
                             },
                         ],
