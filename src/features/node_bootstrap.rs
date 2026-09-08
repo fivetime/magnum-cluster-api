@@ -23,6 +23,9 @@ use crate::{
     },
 };
 use base64::prelude::*;
+use flate2::{write::GzEncoder, Compression};
+use std::io::Write;
+use std::sync::LazyLock;
 use cluster_feature_derive::ClusterFeatureValues;
 use kube::CustomResourceExt;
 use schemars::JsonSchema;
@@ -38,6 +41,22 @@ const INSTALL_SH: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/data/node-bootstrap/install.sh"
 ));
+
+/// gzip+base64, not plain base64: the KubeadmConfig CRD caps
+/// `files[].content` at 10240 bytes (api/bootstrap/kubeadm/v1beta2,
+/// MaxLength=10240), and the script is 15 KB base64-encoded. Compressed it is
+/// under 6 KB. CABPK decodes `gzip+base64` itself, so nothing on the node has
+/// to change. A test below fails the build if the script ever outgrows the cap.
+static INSTALL_SH_ENCODED: LazyLock<String> = LazyLock::new(|| {
+    let mut gz = GzEncoder::new(Vec::new(), Compression::best());
+    gz.write_all(INSTALL_SH.as_bytes())
+        .expect("gzip of an in-memory string cannot fail");
+    BASE64_STANDARD.encode(gz.finish().expect("gzip finish"))
+});
+
+/// The CRD's limit on a single file's content. Kept here so the test that
+/// guards it names the number it is guarding.
+const FILE_CONTENT_MAX: usize = 10240;
 
 const SCRIPT_PATH: &str = "/run/kubeadm/node-bootstrap.sh";
 const ENV_PATH: &str = "/run/kubeadm/node-bootstrap.env";
@@ -109,10 +128,9 @@ impl ClusterFeaturePatches for Feature {
                     },
                     json_patches: vec![
                         // A literal `value`, not a `valueFrom.template`: the
-                        // ClusterClass CRD caps a template at 10240 bytes and
-                        // this script is past that once base64-encoded. There
-                        // is nothing to render in it anyway - the parts that
-                        // vary per cluster go in the env file below.
+                        // ClusterClass CRD caps a template at 10240 bytes too,
+                        // and there is nothing to render in the script anyway -
+                        // the parts that vary per cluster go in the env file.
                         ClusterClassPatchesDefinitionsJsonPatches {
                             op: "add".into(),
                             path: "/spec/template/spec/kubeadmConfigSpec/files/-".into(),
@@ -120,8 +138,8 @@ impl ClusterFeaturePatches for Feature {
                                 "path": SCRIPT_PATH,
                                 "permissions": "0755",
                                 "owner": "root:root",
-                                "encoding": "base64",
-                                "content": BASE64_STANDARD.encode(INSTALL_SH),
+                                "encoding": "gzip+base64",
+                                "content": INSTALL_SH_ENCODED.as_str(),
                             })),
                             ..Default::default()
                         },
@@ -177,8 +195,8 @@ impl ClusterFeaturePatches for Feature {
                                 "path": SCRIPT_PATH,
                                 "permissions": "0755",
                                 "owner": "root:root",
-                                "encoding": "base64",
-                                "content": BASE64_STANDARD.encode(INSTALL_SH),
+                                "encoding": "gzip+base64",
+                                "content": INSTALL_SH_ENCODED.as_str(),
                             })),
                             ..Default::default()
                         },
@@ -227,7 +245,36 @@ mod tests {
     use super::*;
     use crate::features::test::TestClusterResources;
     use crate::resources::fixtures::default_values;
+    use flate2::read::GzDecoder;
     use pretty_assertions::assert_eq;
+    use std::io::Read;
+
+    /// The CRD rejects a file over 10240 bytes at KubeadmControlPlane creation
+    /// - after the ClusterClass was accepted, after the Cluster was accepted,
+    /// with the failure surfacing as TopologyReconciled=False on a cluster
+    /// that never gets a control plane. This is the same limit, checked where
+    /// it costs nothing.
+    #[test]
+    fn test_encoded_script_fits_the_file_content_cap() {
+        let len = INSTALL_SH_ENCODED.len();
+        assert!(
+            len <= FILE_CONTENT_MAX,
+            "install.sh is {len} bytes gzip+base64-encoded; the KubeadmConfig CRD caps files[].content at {FILE_CONTENT_MAX}"
+        );
+    }
+
+    /// What CABPK writes to disk has to be the script in the repository.
+    #[test]
+    fn test_encoded_script_round_trips() {
+        let gz = BASE64_STANDARD
+            .decode(INSTALL_SH_ENCODED.as_str())
+            .expect("valid base64");
+        let mut out = String::new();
+        GzDecoder::new(gz.as_slice())
+            .read_to_string(&mut out)
+            .expect("valid gzip");
+        assert_eq!(out, INSTALL_SH);
+    }
 
     /// Disabled is the default, and disabled has to mean "the ClusterClass
     /// looks exactly as it did before this feature existed" - not "the patch
