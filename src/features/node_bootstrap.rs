@@ -47,9 +47,31 @@ const INSTALL_SH: &str = include_str!(concat!(
 /// MaxLength=10240), and the script is 15 KB base64-encoded. Compressed it is
 /// under 6 KB. CABPK decodes `gzip+base64` itself, so nothing on the node has
 /// to change. A test below fails the build if the script ever outgrows the cap.
+/// The script as shipped: full-line comments dropped, blank lines dropped.
+/// The file in the repository keeps every comment - that is where a reader
+/// looks - and the node gets the same program at half the size. Kept are the
+/// shebang and `# shellcheck` directives, which start with `#!` and `# shell`
+/// respectively; a `#` inside a line (a heredoc body, a string) is untouched
+/// because only lines that *start* with `#` are considered.
+fn strip_comments(script: &str) -> String {
+    let mut out = String::with_capacity(script.len());
+    for line in script.lines() {
+        let t = line.trim_start();
+        let is_comment = t.starts_with('#') && !t.starts_with("#!") && !t.starts_with("# shellcheck");
+        if is_comment || t.is_empty() {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+static INSTALL_SH_STRIPPED: LazyLock<String> = LazyLock::new(|| strip_comments(INSTALL_SH));
+
 static INSTALL_SH_ENCODED: LazyLock<String> = LazyLock::new(|| {
     let mut gz = GzEncoder::new(Vec::new(), Compression::best());
-    gz.write_all(INSTALL_SH.as_bytes())
+    gz.write_all(INSTALL_SH_STRIPPED.as_bytes())
         .expect("gzip of an in-memory string cannot fail");
     BASE64_STANDARD.encode(gz.finish().expect("gzip finish"))
 });
@@ -273,7 +295,26 @@ mod tests {
         GzDecoder::new(gz.as_slice())
             .read_to_string(&mut out)
             .expect("valid gzip");
-        assert_eq!(out, INSTALL_SH);
+        assert_eq!(out, *INSTALL_SH_STRIPPED);
+    }
+
+    /// Stripping must remove only what a shell ignores. The shebang and the
+    /// shellcheck directive are lines that start with `#` and must survive; a
+    /// heredoc body whose line begins with `#` is inside a quoted block and
+    /// must survive too - the one in the containerd unit file does.
+    #[test]
+    fn test_strip_comments_keeps_what_the_shell_needs() {
+        let s = &*INSTALL_SH_STRIPPED;
+        assert!(s.starts_with("#!/usr/bin/env bash\n"), "shebang must be first");
+        assert!(s.contains("# shellcheck disable=SC1090"), "shellcheck directive must survive");
+        assert!(!s.contains("\n# SPDX-License-Identifier"), "a full-line comment must be gone");
+        assert!(!s.contains("\n\n"), "blank lines must be gone");
+        // Every heredoc that the script opens must still be closed.
+        for tag in ["UNIT", "DROPIN", "MODULES", "SYSCTL", "CRUN", "GVISOR", "ENTRY"] {
+            let opens = s.matches(&format!("<<'{tag}'")).count() + s.matches(&format!("<<{tag}")).count();
+            let closes = s.lines().filter(|l| *l == tag).count();
+            assert_eq!(opens, closes, "heredoc {tag}: {opens} opened, {closes} closed");
+        }
     }
 
     /// Disabled is the default, and disabled has to mean "the ClusterClass

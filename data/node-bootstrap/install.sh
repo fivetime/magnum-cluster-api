@@ -55,6 +55,18 @@ CNI_PLUGINS_VERSION=${CNI_PLUGINS_VERSION:-1.9.1}
 # from another minor on the node.
 CRI_TOOLS_VERSION=${CRI_TOOLS_VERSION:-${K8S_VERSION%.*}.0}
 
+# Runtime handlers beyond runc. The driver creates a RuntimeClass for each of
+# these names on every cluster it builds, so a node that does not carry the
+# handler admits the pod and fails it at container creation - the failure the
+# prebuilt images exist to avoid. Installed by default for that reason; set
+# NODE_BOOTSTRAP_RUNTIMES to a subset to leave some out on purpose.
+RUNTIMES=${NODE_BOOTSTRAP_RUNTIMES:-"crun gvisor kata"}
+# Pinned, not "latest": every node fetches on its own, and a rolling pointer
+# would let one cluster's nodes disagree on which runsc they run.
+GVISOR_RELEASE=${GVISOR_RELEASE:-release-20260817.0}
+GVISOR_PLATFORM=${GVISOR_PLATFORM:-systrap}
+KATA_VERSION=${KATA_VERSION:-4.1.0}
+
 case "$(uname -m)" in
     x86_64)  ARCH=amd64 ;;
     aarch64) ARCH=arm64 ;;
@@ -92,11 +104,11 @@ if command -v apt-get >/dev/null; then
     apt-get update -qq
     apt-get install -y -qq --no-install-recommends \
         conntrack socat ebtables ethtool iptables iproute2 kmod lvm2 \
-        logrotate libseccomp2 curl ca-certificates
+        logrotate libseccomp2 curl ca-certificates zstd
 elif command -v dnf >/dev/null; then
     dnf install -y -q \
         conntrack-tools socat ebtables ethtool iptables-nft iproute kmod lvm2 \
-        logrotate libseccomp curl ca-certificates
+        logrotate libseccomp curl ca-certificates zstd
 else
     die "no supported package manager found"
 fi
@@ -127,6 +139,19 @@ if [ ! -s /etc/containerd/config.toml ]; then
     sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml
 else
     log "keeping the config.toml the cluster supplied"
+fi
+# The runtime handlers below are drop-ins under conf.d. The cluster's
+# config.toml imports that directory; `containerd config default` writes
+# `imports = []`, and containerd ignores an unimported drop-in without a word.
+# (On a Magnum cluster the containerdConfig patch always supplies the file, so
+# the generated branch is a fallback; its version-3 document with version-2
+# drop-ins is untested here.)
+if ! grep -q 'conf\.d/\*\.toml' /etc/containerd/config.toml; then
+    if grep -q '^imports' /etc/containerd/config.toml; then
+        sed -i 's|^imports.*|imports = ["/etc/containerd/conf.d/*.toml"]|' /etc/containerd/config.toml
+    else
+        sed -i '1a imports = ["/etc/containerd/conf.d/*.toml"]' /etc/containerd/config.toml
+    fi
 fi
 
 cat > /etc/systemd/system/containerd.service <<'UNIT'
@@ -169,6 +194,153 @@ install -m 755 "runc.${ARCH}" /usr/bin/runc
 CRUN_URL=${CRUN_URL:-"${GH}/containers/crun/releases/download/${CRUN_VERSION}/crun-${CRUN_VERSION}-linux-${ARCH}"}
 fetch "$CRUN_URL" "crun-${CRUN_VERSION}-linux-${ARCH}"
 install -m 755 "crun-${CRUN_VERSION}-linux-${ARCH}" /usr/bin/crun
+# What the default handler executes. Without this drop-in crun is on disk and
+# runc is what runs, which is how the first version of this script shipped.
+case " $RUNTIMES " in *" crun "*)
+cat > /etc/containerd/conf.d/50-crun.toml <<'CRUN'
+version = 2
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+    runtime_type = "io.containerd.runc.v2"
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+    BinaryName = "/usr/bin/crun"
+    SystemdCgroup = true
+CRUN
+;; esac
+
+# ------------------------------------------------------------------- gvisor
+#
+# A static userspace kernel; the systrap platform needs no /dev/kvm, so this
+# handler works on a node where no Kata VM can start. Ported from the gvisor
+# element in openstack-magnum-images.
+case " $RUNTIMES " in *" gvisor "*)
+case "$ARCH" in amd64) GVISOR_ARCH=x86_64 ;; arm64) GVISOR_ARCH=aarch64 ;; esac
+GVISOR_URL=${GVISOR_URL:-"${MIRROR:+${MIRROR}/storage.googleapis.com}"}
+GVISOR_URL=${GVISOR_URL:-https://storage.googleapis.com}
+GVISOR_URL="${GVISOR_URL}/gvisor/releases/release/${GVISOR_RELEASE}/${GVISOR_ARCH}"
+for f in runsc containerd-shim-runsc-v1; do
+    fetch "${GVISOR_URL}/${f}" "$f"; fetch "${GVISOR_URL}/${f}.sha512" "${f}.sha512"
+done
+sha512sum -c runsc.sha512 containerd-shim-runsc-v1.sha512
+install -m 755 runsc /usr/bin/runsc
+install -m 755 containerd-shim-runsc-v1 /usr/bin/containerd-shim-runsc-v1
+printf 'platform = "%s"\n' "$GVISOR_PLATFORM" > /etc/containerd/runsc.toml
+cat > /etc/containerd/conf.d/99-gvisor.toml <<'GVISOR'
+version = 2
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.gvisor]
+    runtime_type = "io.containerd.runsc.v1"
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.gvisor.options]
+    TypeUrl = "io.containerd.runsc.v1.options"
+    ConfigPath = "/etc/containerd/runsc.toml"
+GVISOR
+log "gvisor ${GVISOR_RELEASE} (${GVISOR_PLATFORM})"
+;; esac
+
+# --------------------------------------------------------------------- kata
+#
+# Two tarballs since 4.1.0 - runtime-rs and the Go runtime - both installed,
+# because runtime-rs cannot start a QEMU sandbox here and the Go runtime's
+# kata-qemu is the name everything asks for. kata-static first so the Go
+# tarball wins where the 87 shared paths overlap. Ported from the kata element;
+# the /dev/shm handling is the part that differs at first boot (see below).
+case " $RUNTIMES " in *" kata "*)
+KATA_BASE=${KATA_BASE_URL:-"${GH}/kata-containers/kata-containers/releases/download/${KATA_VERSION}"}
+: > /etc/kata-static.sha256
+for t in "kata-static-${KATA_VERSION}-${ARCH}.tar.zst" "kata-go-static-${KATA_VERSION}-${ARCH}.tar.zst"; do
+    fetch "${KATA_BASE}/${t}" "$t"
+    # The release publishes no checksum asset; record what was installed.
+    sha256sum "$t" >> /etc/kata-static.sha256
+    tar --zstd -xf "$t" -C /
+    rm -f "$t"
+done
+SHIM_GO=/opt/kata/bin/containerd-shim-kata-v2
+SHIM_RS=/opt/kata/runtime-rs/bin/containerd-shim-kata-v2
+for shim in "$SHIM_GO" "$SHIM_RS"; do
+    [ -x "$shim" ] || die "kata: ${shim} is missing; the tarball layout has changed"
+done
+for b in cloud-hypervisor firecracker jailer kata-runtime kata-monitor kata-collect-data.sh \
+         containerd-shim-kata-v2 qemu-system-x86_64 qemu-system-aarch64; do
+    [ -e "/opt/kata/bin/$b" ] && ln -sfn "/opt/kata/bin/$b" "/usr/local/bin/$b"
+done
+# vhost_vsock/vhost_net carry shim<->agent traffic. Loaded now, not only listed:
+# this is the running kernel, not a chroot.
+printf 'vhost_vsock\nvhost_net\n' > /etc/modules-load.d/kata.conf
+modprobe vhost_vsock; modprobe vhost_net
+DEFAULTS=/opt/kata/share/defaults/kata-containers
+install -d -m 755 /etc/kata-containers
+for c in configuration-qemu.toml configuration-clh.toml configuration-fc.toml; do
+    [ -f "${DEFAULTS}/$c" ] && cp "${DEFAULTS}/$c" "/etc/kata-containers/$c"
+done
+for c in configuration-qemu-runtime-rs.toml configuration-clh-runtime-rs.toml configuration-dragonball.toml; do
+    [ -f "${DEFAULTS}/runtime-rs/$c" ] && cp "${DEFAULTS}/runtime-rs/$c" "/etc/kata-containers/$c"
+done
+[ -f /etc/kata-containers/configuration-qemu.toml ] &&
+    cp /etc/kata-containers/configuration-qemu.toml /etc/kata-containers/configuration.toml
+# Handlers under the names kata-deploy uses: bare = Go runtime, -runtime-rs =
+# Rust. Derived from the configs present, so each arch registers what it can
+# run. privileged_without_host_devices: a privileged Kata pod must not get the
+# host's device nodes, they mean nothing in the guest.
+{
+    echo "version = 2"; echo
+    for entry in "kata-qemu:${SHIM_GO}:configuration-qemu.toml" \
+                 "kata-clh:${SHIM_GO}:configuration-clh.toml" \
+                 "kata-qemu-runtime-rs:${SHIM_RS}:configuration-qemu-runtime-rs.toml" \
+                 "kata-clh-runtime-rs:${SHIM_RS}:configuration-clh-runtime-rs.toml" \
+                 "kata-dragonball:${SHIM_RS}:configuration-dragonball.toml"; do
+        name=${entry%%:*}; rest=${entry#*:}; shim=${rest%%:*}; conf=${rest#*:}
+        [ -f "/etc/kata-containers/${conf}" ] || { log "kata: no ${conf} on ${ARCH}; not registering ${name}"; continue; }
+        cat <<ENTRY
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.${name}]
+  runtime_type = 'io.containerd.kata.v2'
+  runtime_path = '${shim}'
+  privileged_without_host_devices = true
+  pod_annotations = ['io.katacontainers.*']
+  container_annotations = ['io.katacontainers.*']
+  [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.${name}.options]
+    ConfigPath = '/etc/kata-containers/${conf}'
+ENTRY
+    done
+} > /etc/containerd/conf.d/50-kata.toml
+grep -q 'runtimes\.kata-qemu\]' /etc/containerd/conf.d/50-kata.toml ||
+    die "kata: no kata-qemu handler registered; the tarball layout has changed"
+
+# /dev/shm: QEMU backs the guest's RAM with a file there (virtio-fs needs the
+# mapping shared), and systemd sizes it at half of RAM - smaller than kata's
+# 2048 MB default guest on a small node. Both halves are needed: size it, and
+# keep it private so a container's 64 MiB /dev/shm cannot propagate back and
+# shadow it. A node with only the size still fails every kata-qemu sandbox.
+#
+# At first boot /dev/shm is already mounted, so fstab alone would fix the
+# *next* boot: remount now as well. No pod has run yet, so private now is
+# private before anything could shadow it.
+grep -qE '^[^#]*[[:space:]]/dev/shm[[:space:]]' /etc/fstab ||
+    printf 'tmpfs /dev/shm tmpfs rw,nosuid,nodev,inode64,size=75%% 0 0\n' >> /etc/fstab
+mount -o remount,size=75% /dev/shm
+mount --make-private /dev/shm
+cat > /etc/systemd/system/kata-shm-private.service <<'UNIT'
+[Unit]
+Description=Keep /dev/shm private so container shm cannot shadow it
+DefaultDependencies=no
+After=local-fs.target
+Before=containerd.service kubelet.service sysinit.target
+ConditionPathIsMountPoint=/dev/shm
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/mount --make-private /dev/shm
+
+[Install]
+WantedBy=sysinit.target
+UNIT
+install -d -m 755 /etc/systemd/system/sysinit.target.wants
+ln -sfn /etc/systemd/system/kata-shm-private.service /etc/systemd/system/sysinit.target.wants/kata-shm-private.service
+log "kata ${KATA_VERSION}: $(sed -n 's|.*runtimes\.\(kata-[a-z0-9-]*\)\]$|\1|p' /etc/containerd/conf.d/50-kata.toml | tr '\n' ' ')"
+;; esac
+
+# Refuse to hand containerd a config it will reject: a handler drop-in with a
+# typo surfaces at first pod start otherwise, well after the node has joined.
+containerd --config /etc/containerd/config.toml config dump > /dev/null ||
+    die "containerd rejects the assembled config; see the drop-ins in /etc/containerd/conf.d"
 
 # ----------------------------------------------------------------- cni-plugins
 CNI_TGZ="cni-plugins-linux-${ARCH}-v${CNI_PLUGINS_VERSION}.tgz"
@@ -264,4 +436,4 @@ done
 crictl --runtime-endpoint unix:///run/containerd/containerd.sock version >/dev/null ||
     die "containerd is installed but its CRI endpoint never answered"
 
-log "done: $(kubeadm version -o short), $(containerd --version | awk '{print $1, $3}')"
+log "done: $(kubeadm version -o short), $(containerd --version | awk '{print $1, $3}'); handlers: $(containerd --config /etc/containerd/config.toml config dump 2>/dev/null | sed -n 's|.*containerd\.runtimes\.\([a-z0-9-]*\)\]$|\1|p' | sort -u | tr '\n' ' ')"
