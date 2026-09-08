@@ -330,14 +330,21 @@ pub static KUBEADM_CONFIG_TEMPLATE: LazyLock<KubeadmConfigTemplate> =
                         encoding: Some(KubeadmConfigTemplateTemplateSpecFilesEncoding::Base64),
                         ..Default::default()
                     }]),
-                    // Present and empty on purpose. Two features now write
-                    // into this list, and a JSON patch cannot append to a list
+                    // Present on purpose, and not empty. Two features write
+                    // into this list, and a JSON patch cannot add to a list
                     // that does not exist - so without this each would have to
                     // replace the whole list, and whichever CAPI applied last
                     // would silently drop the other's commands. Feature order
                     // comes from `inventory::iter`, which is link order and
                     // not something to rely on.
-                    pre_kubeadm_commands: Some(vec![]),
+                    //
+                    // Not an empty list: the Go type is `omitempty`, so the
+                    // apiserver drops an empty one on write and the key is
+                    // gone by the time the topology controller patches it
+                    // ("doc is missing path: /spec/template/spec/
+                    // preKubeadmCommands/0"). Same trick as postKubeadmCommands
+                    // and the .placeholder file above: one harmless entry.
+                    pre_kubeadm_commands: Some(vec!["echo PLACEHOLDER".to_string()]),
                     join_configuration: Some(KubeadmConfigTemplateTemplateSpecJoinConfiguration {
                         node_registration: Some(
                             KubeadmConfigTemplateTemplateSpecJoinConfigurationNodeRegistration {

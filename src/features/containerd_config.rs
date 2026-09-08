@@ -119,8 +119,10 @@ impl ClusterFeaturePatches for Feature {
                             // Appended, not assigned. Replacing the whole list
                             // discards whatever another feature put there, and
                             // which one CAPI applies last is link order. The
-                            // base KubeadmConfigTemplate carries an empty list
-                            // so that "-" has something to append to.
+                            // base KubeadmConfigTemplate carries a placeholder
+                            // entry so that "-" has something to append to -
+                            // an empty list would not survive the apiserver's
+                            // omitempty.
                             ClusterClassPatchesDefinitionsJsonPatches {
                                 op: "add".into(),
                                 path: "/spec/template/spec/preKubeadmCommands/-".into(),
@@ -297,7 +299,13 @@ mod tests {
             kct_spec
                 .pre_kubeadm_commands
                 .expect("pre commands should be set"),
-            vec!["systemctl daemon-reload", "systemctl restart containerd"]
+            // The base template's placeholder stays: containerdConfig appends,
+            // it no longer owns the list.
+            vec![
+                "echo PLACEHOLDER",
+                "systemctl daemon-reload",
+                "systemctl restart containerd"
+            ]
         );
 
         let kct_files = kct_spec.files.expect("files should be set");

@@ -360,10 +360,14 @@ mod tests {
             "the mirror should reach the node, got: {body}"
         );
 
+        // First, ahead of the base template's placeholder and of whatever
+        // containerdConfig appends - same reasoning as the control plane.
         assert_eq!(
-            spec.pre_kubeadm_commands,
-            Some(vec![format!("bash {SCRIPT_PATH}")]),
-            "the worker's bootstrap command should be set"
+            spec.pre_kubeadm_commands
+                .expect("preKubeadmCommands should be set")
+                .first(),
+            Some(&format!("bash {SCRIPT_PATH}")),
+            "the worker's bootstrap must be the first pre-kubeadm command"
         );
     }
 }
