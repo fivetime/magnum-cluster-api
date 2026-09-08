@@ -566,3 +566,94 @@ def test_wait_for_sdk_loadbalancers_deleted_times_out(mocker):
         utils._wait_for_sdk_loadbalancers_deleted(octavia_client, {"lb-id"})
 
     sleep.assert_called_once_with(1)
+
+
+class _FakeImage(dict):
+    """Enough of an SDK Image for these tests: dict-like `get`, nothing else."""
+
+
+@pytest.mark.parametrize(
+    "image,expected",
+    [
+        # A node image from openstack-magnum-images: the property is set at
+        # upload time (hack/glance/push.sh), so it needs nothing installed.
+        (_FakeImage({"k8s_version": "1.37.0"}), True),
+        # Some SDK versions hand unknown Glance properties back nested.
+        (_FakeImage({"properties": {"k8s_version": "1.37.0"}}), True),
+        # A plain distribution image - the only kind that exists for bare
+        # metal, since a cloud image has no firmware and no console.
+        (_FakeImage({"os_distro": "ubuntu"}), False),
+        (_FakeImage({"properties": {"os_distro": "ubuntu"}}), False),
+        # An empty property must not read as "present".
+        (_FakeImage({"k8s_version": ""}), False),
+        # Not knowing is not a reason to reinstall Kubernetes on a node.
+        (None, True),
+    ],
+)
+def test_image_has_kubernetes(image, expected):
+    assert utils.image_has_kubernetes(image) is expected
+
+
+def test_get_node_bootstrap_defaults_off_for_a_node_image():
+    cluster = mock.Mock()
+    cluster.labels = {"kube_tag": "v1.37.0"}
+
+    values = utils.get_node_bootstrap(
+        cluster, _FakeImage({"k8s_version": "1.37.0"}), {}
+    )
+
+    assert values["enabled"] is False
+    # No leading "v": it is not part of the dl.k8s.io path the script builds.
+    assert values["kubernetesVersion"] == "1.37.0"
+    assert values["mirror"] == ""
+
+
+def test_get_node_bootstrap_on_for_a_plain_image():
+    cluster = mock.Mock()
+    cluster.labels = {"kube_tag": "v1.37.0"}
+
+    values = utils.get_node_bootstrap(cluster, _FakeImage({"os_distro": "ubuntu"}), {})
+
+    assert values["enabled"] is True
+
+
+@pytest.mark.parametrize(
+    "override,image,expected",
+    [
+        # The label wins over the image in both directions: an image whose
+        # Kubernetes is the wrong version can be forced to reinstall, and a
+        # plain image can be told not to bother.
+        ("true", _FakeImage({"k8s_version": "1.37.0"}), True),
+        ("false", _FakeImage({"os_distro": "ubuntu"}), False),
+    ],
+)
+def test_get_node_bootstrap_label_overrides_the_image(override, image, expected):
+    cluster = mock.Mock()
+    cluster.labels = {"kube_tag": "v1.37.0"}
+
+    values = utils.get_node_bootstrap(cluster, image, {"node_bootstrap": override})
+
+    assert values["enabled"] is expected
+
+
+def test_get_node_bootstrap_node_group_label_beats_cluster_label():
+    cluster = mock.Mock()
+    cluster.labels = {"kube_tag": "v1.37.0", "node_bootstrap_mirror": "https://cluster"}
+
+    values = utils.get_node_bootstrap(
+        cluster,
+        _FakeImage({"os_distro": "ubuntu"}),
+        {"node_bootstrap_mirror": "https://nodegroup"},
+    )
+
+    assert values["mirror"] == "https://nodegroup"
+
+
+def test_get_node_bootstrap_falls_back_to_cluster_labels():
+    cluster = mock.Mock()
+    cluster.labels = {"kube_tag": "v1.37.0", "node_bootstrap": "true"}
+
+    # labels=None is the control-plane call site, which has no node group.
+    values = utils.get_node_bootstrap(cluster, _FakeImage({"k8s_version": "1.37.0"}))
+
+    assert values["enabled"] is True

@@ -913,6 +913,15 @@ def mutate_machine_deployment(
                         "name": "imageUUID",
                         "value": image.get("id"),
                     },
+                    # Per node group, from the image this node group boots: a
+                    # cluster can mix a prebuilt node image with a plain
+                    # distribution one, and only the latter installs anything.
+                    {
+                        "name": "nodeBootstrap",
+                        "value": utils.get_node_bootstrap(
+                            cluster, image, node_group.labels
+                        ),
+                    },
                     {
                         "name": "hardwareDiskBus",
                         "value": image.get("hw_disk_bus") or "",
@@ -1311,6 +1320,13 @@ class Cluster(ClusterBase):
                         {
                             "name": "imageUUID",
                             "value": image.get("id"),
+                        },
+                        # Cluster default. Node groups override it with their
+                        # own image above; this is what the control plane and
+                        # any node group without its own answer get.
+                        {
+                            "name": "nodeBootstrap",
+                            "value": utils.get_node_bootstrap(self.cluster, image),
                         },
                         {
                             "name": "kubeletTLSCipherSuites",

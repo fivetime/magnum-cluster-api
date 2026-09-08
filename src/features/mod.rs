@@ -64,6 +64,7 @@ pub mod image_repository;
 pub mod images;
 pub mod keystone_auth;
 pub mod networks;
+pub mod node_bootstrap;
 pub mod openid_connect;
 pub mod operating_system;
 pub mod server_groups;

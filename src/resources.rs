@@ -177,7 +177,8 @@ impl From<Values> for Vec<ClusterTopologyVariables> {
 pub mod fixtures {
     use crate::{
         features::{
-            api_server_load_balancer, audit_log, boot_volume, openid_connect, operating_system,
+            api_server_load_balancer, audit_log, boot_volume, node_bootstrap, openid_connect,
+            operating_system,
         },
         resources::Values,
     };
@@ -205,6 +206,15 @@ pub mod fixtures {
             .boot_volume(boot_volume::BootVolumeConfig::builder().r#type("nvme".into()).size(0).build())
             .boot_volume_availability_zone("".into())
             .cluster_identity_ref_name("identity-ref-name".into())
+            // Off by default, which is what an image that already carries
+            // Kubernetes gets - and that is every image this cloud builds.
+            .node_bootstrap(
+                node_bootstrap::NodeBootstrapConfig::builder()
+                    .enabled(false)
+                    .kubernetes_version("1.37.0".to_string())
+                    .mirror("".to_string())
+                    .build(),
+            )
             .containerd_config(
                 BASE64_STANDARD.encode(indoc! {r#"
                     # Use config version 2 to enable new configuration fields.
@@ -310,7 +320,7 @@ mod tests {
         let values = default_values();
         let variables: Vec<ClusterTopologyVariables> = values.into();
 
-        assert_eq!(variables.len(), 39);
+        assert_eq!(variables.len(), 40);
 
         for var in &variables {
             match var.name.as_str() {
@@ -445,6 +455,9 @@ mod tests {
                 }
                 "admissionControlList" => {
                     assert_eq!(var.value, json!(default_values().admission_control_list));
+                }
+                "nodeBootstrap" => {
+                    assert_eq!(var.value, json!(default_values().node_bootstrap));
                 }
                 other => panic!("Unexpected field name: {}", other),
             }

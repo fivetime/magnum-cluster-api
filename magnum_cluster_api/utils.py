@@ -194,6 +194,64 @@ def get_kube_tag(cluster: magnum_objects.Cluster) -> str:
     return cluster.labels.get("kube_tag", "v1.25.3")
 
 
+def image_has_kubernetes(image) -> bool:
+    """Whether this image already carries the Kubernetes node stack.
+
+    The node images built by openstack-magnum-images record the version they
+    were built with as the Glance property ``k8s_version``; a plain
+    distribution image - which is the only kind that exists for bare metal -
+    has no such property. So the image's own record answers the question, and
+    nothing has to be configured for the common case to stay correct.
+
+    Unknown Glance properties reach us either as attributes on the SDK Image or
+    inside its ``properties`` dict, depending on the SDK version, so look in
+    both rather than depending on which.
+    """
+    if image is None:
+        return True
+
+    value = image.get("k8s_version")
+    if not value:
+        value = (image.get("properties") or {}).get("k8s_version")
+
+    return bool(value)
+
+
+def get_node_bootstrap(
+    cluster: magnum_objects.Cluster,
+    image,
+    labels: dict | None = None,
+) -> dict:
+    """Build the ``nodeBootstrap`` ClusterClass variable.
+
+    ``labels`` is the node group's labels where there is a node group, and the
+    cluster's otherwise, so a single node group can be forced either way
+    without changing the rest of the cluster.
+
+    The default is taken from the image, and every way of not knowing resolves
+    to disabled - which is the behaviour that existed before this variable did.
+    """
+    if labels is None:
+        labels = cluster.labels
+
+    override = labels.get("node_bootstrap")
+    if override is not None:
+        enabled = strutils.bool_from_string(override, strict=False)
+    else:
+        enabled = not image_has_kubernetes(image)
+
+    return {
+        "enabled": enabled,
+        # The script installs this exact version; the leading "v" that
+        # kube_tag carries is not part of the dl.k8s.io path.
+        "kubernetesVersion": get_kube_tag(cluster).lstrip("v"),
+        "mirror": labels.get(
+            "node_bootstrap_mirror",
+            cluster.labels.get("node_bootstrap_mirror", ""),
+        ),
+    }
+
+
 def get_auto_scaling_enabled(cluster: magnum_objects.Cluster) -> bool:
     return get_cluster_label_as_bool(cluster, "auto_scaling_enabled", False)
 
