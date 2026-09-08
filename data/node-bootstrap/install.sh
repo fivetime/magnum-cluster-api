@@ -62,8 +62,11 @@ CRI_TOOLS_VERSION=${CRI_TOOLS_VERSION:-${K8S_VERSION%.*}.0}
 # NODE_BOOTSTRAP_RUNTIMES to a subset to leave some out on purpose.
 RUNTIMES=${NODE_BOOTSTRAP_RUNTIMES:-"crun gvisor kata"}
 # Pinned, not "latest": every node fetches on its own, and a rolling pointer
-# would let one cluster's nodes disagree on which runsc they run.
-GVISOR_RELEASE=${GVISOR_RELEASE:-release-20260817.0}
+# would let one cluster's nodes disagree on which runsc they run. The URL path
+# takes the tag WITHOUT the "release-" prefix that `runsc --version` prints:
+# .../release/20260817.0/x86_64/runsc is a 200, .../release/release-20260817.0/
+# is a 404.
+GVISOR_RELEASE=${GVISOR_RELEASE:-20260817.0}
 GVISOR_PLATFORM=${GVISOR_PLATFORM:-systrap}
 KATA_VERSION=${KATA_VERSION:-4.1.0}
 
