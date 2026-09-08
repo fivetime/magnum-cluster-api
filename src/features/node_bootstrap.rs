@@ -11,12 +11,10 @@ use crate::{
         },
         kubeadmconfigtemplates::{
             KubeadmConfigTemplate, KubeadmConfigTemplateTemplateSpecFiles,
-            KubeadmConfigTemplateTemplateSpecFilesEncoding,
         },
         kubeadmcontrolplanetemplates::{
             KubeadmControlPlaneTemplate,
             KubeadmControlPlaneTemplateTemplateSpecKubeadmConfigSpecFiles,
-            KubeadmControlPlaneTemplateTemplateSpecKubeadmConfigSpecFilesEncoding,
         },
     },
     features::{
@@ -110,22 +108,21 @@ impl ClusterFeaturePatches for Feature {
                         },
                     },
                     json_patches: vec![
+                        // A literal `value`, not a `valueFrom.template`: the
+                        // ClusterClass CRD caps a template at 10240 bytes and
+                        // this script is past that once base64-encoded. There
+                        // is nothing to render in it anyway - the parts that
+                        // vary per cluster go in the env file below.
                         ClusterClassPatchesDefinitionsJsonPatches {
                             op: "add".into(),
                             path: "/spec/template/spec/kubeadmConfigSpec/files/-".into(),
-                            value_from: Some(ClusterClassPatchesDefinitionsJsonPatchesValueFrom {
-                                template: Some(
-                                    serde_yaml::to_string(&KubeadmControlPlaneTemplateTemplateSpecKubeadmConfigSpecFiles {
-                                        path: SCRIPT_PATH.to_string(),
-                                        permissions: Some("0755".to_string()),
-                                        owner: Some("root:root".to_string()),
-                                        content: Some(BASE64_STANDARD.encode(INSTALL_SH)),
-                                        encoding: Some(KubeadmControlPlaneTemplateTemplateSpecKubeadmConfigSpecFilesEncoding::Base64),
-                                        ..Default::default()
-                                    }).unwrap(),
-                                ),
-                                ..Default::default()
-                            }),
+                            value: Some(json!({
+                                "path": SCRIPT_PATH,
+                                "permissions": "0755",
+                                "owner": "root:root",
+                                "encoding": "base64",
+                                "content": BASE64_STANDARD.encode(INSTALL_SH),
+                            })),
                             ..Default::default()
                         },
                         ClusterClassPatchesDefinitionsJsonPatches {
@@ -172,22 +169,17 @@ impl ClusterFeaturePatches for Feature {
                         },
                     },
                     json_patches: vec![
+                        // Literal `value`, same 10240-byte reason as above.
                         ClusterClassPatchesDefinitionsJsonPatches {
                             op: "add".into(),
                             path: "/spec/template/spec/files/-".into(),
-                            value_from: Some(ClusterClassPatchesDefinitionsJsonPatchesValueFrom {
-                                template: Some(
-                                    serde_yaml::to_string(&KubeadmConfigTemplateTemplateSpecFiles {
-                                        path: SCRIPT_PATH.to_string(),
-                                        permissions: Some("0755".to_string()),
-                                        owner: Some("root:root".to_string()),
-                                        content: Some(BASE64_STANDARD.encode(INSTALL_SH)),
-                                        encoding: Some(KubeadmConfigTemplateTemplateSpecFilesEncoding::Base64),
-                                        ..Default::default()
-                                    }).unwrap(),
-                                ),
-                                ..Default::default()
-                            }),
+                            value: Some(json!({
+                                "path": SCRIPT_PATH,
+                                "permissions": "0755",
+                                "owner": "root:root",
+                                "encoding": "base64",
+                                "content": BASE64_STANDARD.encode(INSTALL_SH),
+                            })),
                             ..Default::default()
                         },
                         ClusterClassPatchesDefinitionsJsonPatches {
