@@ -21,6 +21,17 @@
 # a deployment that mirrors these artifacts inside its own network sets
 # NODE_BOOTSTRAP_MIRROR and never reaches the internet. The checksum check is
 # not skipped when mirrored - a mirror is a convenience, not a trust boundary.
+#
+# The same script also bakes the stack into an image. openstack-ironic-images
+# runs it inside a chroot of a freshly installed bare-metal disk, with
+# NODE_BOOTSTRAP_MODE=image: the files it writes are the same, but nothing
+# that would act on the *builder's* running kernel is done - no modprobe, no
+# sysctl, no /dev/shm remount, no service start, no CRI probe. Those are left
+# to the image's own first boot, which the persisted files already cover. In
+# that mode the mirror is usually file:// (curl reads it like any other URL),
+# the distribution packages come pre-fetched from NODE_BOOTSTRAP_PKG_DIR, and
+# the control-plane images from NODE_BOOTSTRAP_IMAGES_DIR, so the build needs
+# no network at all and every byte has a recorded checksum.
 
 set -Eeuo pipefail
 
@@ -34,6 +45,12 @@ if [ -r "$CONF" ]; then
 fi
 
 : "${K8S_VERSION:?K8S_VERSION is required (written by the nodeBootstrap patch)}"
+
+# live:  this is the node, act on the running kernel and start services (default)
+# image: this is a mounted image in a chroot, write files only
+MODE=${NODE_BOOTSTRAP_MODE:-live}
+case "$MODE" in live|image) ;; *) die "NODE_BOOTSTRAP_MODE must be live or image, not '${MODE}'" ;; esac
+live() { [ "$MODE" = live ]; }
 
 # A mirror prefix, e.g. https://artifacts.internal/k8s. Empty means upstream.
 # Each component's full URL can also be overridden individually, which is what
@@ -87,7 +104,7 @@ if [ -x /usr/bin/kubeadm ] &&
     exit 0
 fi
 
-log "installing the Kubernetes ${K8S_VERSION} node stack for ${ARCH}"
+log "installing the Kubernetes ${K8S_VERSION} node stack for ${ARCH} (${MODE} mode)"
 log "  containerd ${CONTAINERD_VERSION}, runc ${RUNC_VERSION}, crun ${CRUN_VERSION}"
 log "  cni-plugins ${CNI_PLUGINS_VERSION}, cri-tools ${CRI_TOOLS_VERSION}"
 [ -n "$MIRROR" ] && log "  mirror: ${MIRROR}"
@@ -102,7 +119,25 @@ fetch() { curl -fsSL --retry 5 --retry-delay 2 -o "$2" "$1" || die "could not fe
 #
 # kubeadm's preflight refuses to run without conntrack and socat, and the
 # kubelet needs ethtool and the bridge tooling. A cloud image has none of them.
-if command -v apt-get >/dev/null; then
+#
+# NODE_BOOTSTRAP_PKG_DIR holds pre-fetched .deb/.rpm files instead: an image
+# build that must not reach a package archive puts the packages it needs there,
+# with their checksums recorded by whoever fetched them. Every dependency has
+# to be in the directory too; the package manager only resolves within it.
+PKG_DIR=${NODE_BOOTSTRAP_PKG_DIR:-}
+if [ -n "$PKG_DIR" ]; then
+    if command -v dpkg >/dev/null; then
+        export DEBIAN_FRONTEND=noninteractive
+        set -- "$PKG_DIR"/*.deb
+        [ -e "$1" ] && dpkg -i "$@"
+    elif command -v rpm >/dev/null; then
+        set -- "$PKG_DIR"/*.rpm
+        [ -e "$1" ] && rpm -Uvh --replacepkgs "$@"
+    else
+        die "no supported package manager found"
+    fi
+    log "distribution packages from ${PKG_DIR}"
+elif command -v apt-get >/dev/null; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
     apt-get install -y -qq --no-install-recommends \
@@ -264,10 +299,10 @@ for b in cloud-hypervisor firecracker jailer kata-runtime kata-monitor kata-coll
          containerd-shim-kata-v2 qemu-system-x86_64 qemu-system-aarch64; do
     [ -e "/opt/kata/bin/$b" ] && ln -sfn "/opt/kata/bin/$b" "/usr/local/bin/$b"
 done
-# vhost_vsock/vhost_net carry shim<->agent traffic. Loaded now, not only listed:
-# this is the running kernel, not a chroot.
+# vhost_vsock/vhost_net carry shim<->agent traffic. Loaded now as well as
+# listed when this is the running kernel; in a chroot only the list is ours.
 printf 'vhost_vsock\nvhost_net\n' > /etc/modules-load.d/kata.conf
-modprobe vhost_vsock; modprobe vhost_net
+if live; then modprobe vhost_vsock; modprobe vhost_net; fi
 DEFAULTS=/opt/kata/share/defaults/kata-containers
 install -d -m 755 /etc/kata-containers
 for c in configuration-qemu.toml configuration-clh.toml configuration-fc.toml; do
@@ -317,8 +352,10 @@ grep -q 'runtimes\.kata-qemu\]' /etc/containerd/conf.d/50-kata.toml ||
 # private before anything could shadow it.
 grep -qE '^[^#]*[[:space:]]/dev/shm[[:space:]]' /etc/fstab ||
     printf 'tmpfs /dev/shm tmpfs rw,nosuid,nodev,inode64,size=75%% 0 0\n' >> /etc/fstab
-mount -o remount,size=75% /dev/shm
-mount --make-private /dev/shm
+if live; then
+    mount -o remount,size=75% /dev/shm
+    mount --make-private /dev/shm
+fi
 cat > /etc/systemd/system/kata-shm-private.service <<'UNIT'
 [Unit]
 Description=Keep /dev/shm private so container shm cannot shadow it
@@ -404,8 +441,7 @@ cat > /etc/modules-load.d/99-kubernetes.conf <<'MODULES'
 overlay
 br_netfilter
 MODULES
-modprobe overlay
-modprobe br_netfilter
+if live; then modprobe overlay; modprobe br_netfilter; fi
 
 cat > /etc/sysctl.d/99-kubelet.conf <<'SYSCTL'
 fs.inotify.max_user_instances = 8192
@@ -420,23 +456,61 @@ net.ipv6.conf.all.disable_ipv6 = 0
 net.ipv6.conf.all.forwarding = 1
 vm.overcommit_memory = 1
 SYSCTL
-sysctl --system >/dev/null
+if live; then sysctl --system >/dev/null; fi
+
+# ------------------------------------------------------------ preloaded images
+#
+# NODE_BOOTSTRAP_IMAGES_DIR holds OCI archives (one tar per image, as skopeo or
+# ctr export write them) to put into containerd's k8s.io namespace ahead of
+# time, so that kubeadm on this node pulls nothing. containerd is started as a
+# plain process for the import when it is not running yet - in a chroot there
+# is no systemd to start it - and stopped again afterwards.
+IMAGES_DIR=${NODE_BOOTSTRAP_IMAGES_DIR:-}
+if [ -n "$IMAGES_DIR" ]; then
+    set -- "$IMAGES_DIR"/*.tar
+    [ -e "$1" ] || die "NODE_BOOTSTRAP_IMAGES_DIR=${IMAGES_DIR} holds no .tar archive"
+    SOCK=/run/containerd/containerd.sock
+    started=
+    if [ ! -S "$SOCK" ]; then
+        containerd --config /etc/containerd/config.toml >/tmp/containerd-import.log 2>&1 &
+        started=$!
+        for _ in $(seq 30); do [ -S "$SOCK" ] && break; sleep 1; done
+        [ -S "$SOCK" ] || die "containerd did not come up for the image import; see /tmp/containerd-import.log"
+    fi
+    n=0
+    for t in "$@"; do
+        ctr -n k8s.io images import "$t" >/dev/null || die "could not import ${t}"
+        n=$((n + 1))
+    done
+    if [ -n "$started" ]; then
+        kill "$started"; wait "$started" 2>/dev/null || true
+        for _ in $(seq 30); do [ -S "$SOCK" ] || break; sleep 1; done
+        rm -f "$SOCK"
+    fi
+    log "preloaded ${n} image archive(s) from ${IMAGES_DIR}"
+fi
 
 # ------------------------------------------------------------------- services
 #
 # containerd has to be up before kubeadm runs; the kubelet is enabled but left
-# stopped, because kubeadm is what starts it once it has written a config.
-systemctl daemon-reload
-systemctl enable --now containerd
-systemctl enable kubelet
+# stopped, because kubeadm is what starts it once it has written a config. In
+# a chroot `systemctl enable` still works - it only writes the symlinks - and
+# starting anything is the image's first boot's job.
+if live; then
+    systemctl daemon-reload
+    systemctl enable --now containerd
+    systemctl enable kubelet
 
-# Assert rather than assume: a node that reaches kubeadm without a working CRI
-# fails much later and much less legibly.
-for _ in $(seq 30); do
-    crictl --runtime-endpoint unix:///run/containerd/containerd.sock version >/dev/null 2>&1 && break
-    sleep 1
-done
-crictl --runtime-endpoint unix:///run/containerd/containerd.sock version >/dev/null ||
-    die "containerd is installed but its CRI endpoint never answered"
+    # Assert rather than assume: a node that reaches kubeadm without a working
+    # CRI fails much later and much less legibly.
+    for _ in $(seq 30); do
+        crictl --runtime-endpoint unix:///run/containerd/containerd.sock version >/dev/null 2>&1 && break
+        sleep 1
+    done
+    crictl --runtime-endpoint unix:///run/containerd/containerd.sock version >/dev/null ||
+        die "containerd is installed but its CRI endpoint never answered"
+else
+    systemctl enable containerd kubelet
+fi
 
 log "done: $(kubeadm version -o short), $(containerd --version | awk '{print $1, $3}'); handlers: $(containerd --config /etc/containerd/config.toml config dump 2>/dev/null | sed -n 's|.*containerd\.runtimes\.\([a-z0-9-]*\)\]$|\1|p' | sort -u | tr '\n' ' ')"
