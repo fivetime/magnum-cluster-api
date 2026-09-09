@@ -110,7 +110,11 @@ log "  cni-plugins ${CNI_PLUGINS_VERSION}, cri-tools ${CRI_TOOLS_VERSION}"
 [ -n "$MIRROR" ] && log "  mirror: ${MIRROR}"
 
 TMPDIR=$(mktemp -d)
-trap 'rm -rf "$TMPDIR"' EXIT
+# IMPORT_CTRD is the containerd this script may start for the image import;
+# it must not outlive the script, least of all when the script dies - in a
+# chroot it would keep the image's root filesystem busy.
+IMPORT_CTRD=
+trap 'rm -rf "$TMPDIR"; [ -n "$IMPORT_CTRD" ] && kill "$IMPORT_CTRD" 2>/dev/null; :' EXIT
 cd "$TMPDIR"
 
 fetch() { curl -fsSL --retry 5 --retry-delay 2 -o "$2" "$1" || die "could not fetch $1"; }
@@ -470,10 +474,9 @@ if [ -n "$IMAGES_DIR" ]; then
     set -- "$IMAGES_DIR"/*.tar
     [ -e "$1" ] || die "NODE_BOOTSTRAP_IMAGES_DIR=${IMAGES_DIR} holds no .tar archive"
     SOCK=/run/containerd/containerd.sock
-    started=
     if [ ! -S "$SOCK" ]; then
         containerd --config /etc/containerd/config.toml >/tmp/containerd-import.log 2>&1 &
-        started=$!
+        IMPORT_CTRD=$!
         for _ in $(seq 30); do [ -S "$SOCK" ] && break; sleep 1; done
         [ -S "$SOCK" ] || die "containerd did not come up for the image import; see /tmp/containerd-import.log"
     fi
@@ -482,8 +485,9 @@ if [ -n "$IMAGES_DIR" ]; then
         ctr -n k8s.io images import "$t" >/dev/null || die "could not import ${t}"
         n=$((n + 1))
     done
-    if [ -n "$started" ]; then
-        kill "$started"; wait "$started" 2>/dev/null || true
+    if [ -n "$IMPORT_CTRD" ]; then
+        kill "$IMPORT_CTRD"; wait "$IMPORT_CTRD" 2>/dev/null || true
+        IMPORT_CTRD=
         for _ in $(seq 30); do [ -S "$SOCK" ] || break; sleep 1; done
         rm -f "$SOCK"
     fi
