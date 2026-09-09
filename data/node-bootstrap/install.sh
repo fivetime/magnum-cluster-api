@@ -440,6 +440,21 @@ ExecStart=
 ExecStart=/usr/bin/kubelet $KUBELET_KUBECONFIG_ARGS $KUBELET_CONFIG_ARGS $KUBELET_KUBEADM_ARGS $KUBELET_EXTRA_ARGS
 DROPIN
 
+# ------------------------------------------------------------------------ swap
+#
+# The kubelet refuses to start while swap is on (failSwapOn), and an image
+# installed by a distribution installer usually has some: subiquity's default
+# layout writes /swap.img and an fstab line for it. A VM node image built by
+# diskimage-builder never had any, which is why this was never needed there.
+# The fstab line is commented out rather than deleted, so what was there
+# stays readable; the swap file itself goes, it is only disk.
+if grep -qE '^[^#]\S*\s+\S+\s+swap\s' /etc/fstab; then
+    log "disabling swap: the kubelet will not run with it"
+    sed -i -E 's|^([^#]\S*\s+\S+\s+swap\s)|# disabled by node-bootstrap: \1|' /etc/fstab
+    if live; then swapoff -a; fi
+    rm -f /swap.img /swapfile
+fi
+
 # ------------------------------------------------------------ kernel and sysctl
 cat > /etc/modules-load.d/99-kubernetes.conf <<'MODULES'
 overlay
