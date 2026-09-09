@@ -42,7 +42,7 @@ from magnum_cluster_api import exceptions as mcapi_exceptions
 from magnum_cluster_api import image_utils, images, objects
 from magnum_cluster_api.cache import ServerGroupCache
 
-AVAILABLE_OPERATING_SYSTEMS = ["ubuntu", "debian", "flatcar", "rockylinux"]
+AVAILABLE_OPERATING_SYSTEMS = ["ubuntu", "debian", "flatcar", "rockylinux", "almalinux"]
 DEFAULT_SERVER_GROUP_POLICIES = ["soft-anti-affinity"]
 AVAILABLE_SERVER_GROUP_POLICIES = [
     "affinity",

@@ -43,6 +43,9 @@ pub enum OperatingSystem {
     Debian,
     Flatcar,
     RockyLinux,
+    // Serialised as "almalinux", which is both the Glance os_distro the image
+    // pipeline sets and the AlmaLinuxDriver's `provides` entry.
+    AlmaLinux,
 }
 
 #[derive(Serialize, Deserialize, ClusterFeatureValues)]

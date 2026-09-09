@@ -767,3 +767,11 @@ class RockyLinuxDriver(BaseDriver):
         return [
             {"server_type": "vm", "os": "rockylinux", "coe": "kubernetes"},
         ]
+
+
+class AlmaLinuxDriver(BaseDriver):
+    @property
+    def provides(self):
+        return [
+            {"server_type": "vm", "os": "almalinux", "coe": "kubernetes"},
+        ]
