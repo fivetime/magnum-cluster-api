@@ -87,14 +87,51 @@ DEFAULT_POD_CIDR = "10.100.0.0/16"
 # what the image registers, because a RuntimeClass whose handler cannot start
 # admits the pod and then fails it at container creation - a far worse error than
 # the Forbidden that omitting it produces. Today those two sets are the same.
+#
+# "kata" is the handler to ask for when a pod wants a VM and does not mind which
+# VMM: the node image and nodeBootstrap both point it at Dragonball.
 NODE_IMAGE_RUNTIME_HANDLERS = (
     "gvisor",
+    "kata",
     "kata-qemu",
     "kata-clh",
     "kata-qemu-runtime-rs",
     "kata-clh-runtime-rs",
     "kata-dragonball",
 )
+
+
+def node_image_runtime_handlers(image) -> tuple:
+    """The RuntimeClasses a cluster built from ``image`` can actually serve.
+
+    The list above is what nodeBootstrap installs, so it is the answer for a
+    plain distribution image. A prebuilt node image answers for itself: the
+    pipeline that builds it starts a pod under every handler it registered
+    before it makes the image public, and records the set in Glance as
+    ``kata_handlers`` (plus ``runsc_version`` when gvisor is there). Reading it
+    means a RuntimeClass is never created for a handler the image lacks - the
+    images built before "kata" existed would otherwise get a "kata"
+    RuntimeClass that admits a pod and then fails it.
+
+    A prebuilt image from before ``kata_handlers`` was recorded carries the
+    original five plus gvisor, which is what this falls back to.
+    """
+    if image is None or not utils.image_has_kubernetes(image):
+        return NODE_IMAGE_RUNTIME_HANDLERS
+
+    def prop(key):
+        value = image.get(key)
+        if not value:
+            value = (image.get("properties") or {}).get(key)
+        return value
+
+    recorded = prop("kata_handlers")
+    if recorded is None:
+        return tuple(h for h in NODE_IMAGE_RUNTIME_HANDLERS if h != "kata")
+
+    handlers = ["gvisor"] if prop("runsc_version") else []
+    handlers += [h.strip() for h in str(recorded).split(",") if h.strip()]
+    return tuple(handlers)
 
 
 class ClusterAutoscalerHelmRelease:
@@ -301,6 +338,16 @@ class CloudProviderClusterResourcesSecret(ClusterBase):
             },
         }
 
+        # RuntimeClasses are cluster-wide but the pods they admit land on
+        # workers, so the default worker node group's image decides the set.
+        osc = clients.get_openstack_api(self.context)
+        worker_ng = getattr(self.cluster, "default_ng_worker", None)
+        worker_image = (
+            utils.lookup_image(osc, worker_ng.image_id)
+            if worker_ng is not None and worker_ng.image_id
+            else None
+        )
+
         data = {
             **data,
             **{
@@ -314,11 +361,10 @@ class CloudProviderClusterResourcesSecret(ClusterBase):
                         "handler": handler,
                     }
                 )
-                for handler in NODE_IMAGE_RUNTIME_HANDLERS
+                for handler in node_image_runtime_handlers(worker_image)
             },
         }
 
-        osc = clients.get_openstack_api(self.context)
         if cinder.is_enabled(self.cluster):
             volume_types = osc.list_volume_types()
             default_volume_type = osc.get_default_volume_type()

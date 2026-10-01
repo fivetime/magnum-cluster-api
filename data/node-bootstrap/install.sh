@@ -323,7 +323,10 @@ done
 # host's device nodes, they mean nothing in the guest.
 {
     echo "version = 2"; echo
-    for entry in "kata-qemu:${SHIM_GO}:configuration-qemu.toml" \
+    # "kata" = a VM without choosing the VMM: Dragonball, runtime-rs's built-in
+    # VMM. Same as the node image, so a cluster has one meaning for the name.
+    for entry in "kata:${SHIM_RS}:configuration-dragonball.toml" \
+                 "kata-qemu:${SHIM_GO}:configuration-qemu.toml" \
                  "kata-clh:${SHIM_GO}:configuration-clh.toml" \
                  "kata-qemu-runtime-rs:${SHIM_RS}:configuration-qemu-runtime-rs.toml" \
                  "kata-clh-runtime-rs:${SHIM_RS}:configuration-clh-runtime-rs.toml" \
@@ -378,7 +381,7 @@ WantedBy=sysinit.target
 UNIT
 install -d -m 755 /etc/systemd/system/sysinit.target.wants
 ln -sfn /etc/systemd/system/kata-shm-private.service /etc/systemd/system/sysinit.target.wants/kata-shm-private.service
-log "kata ${KATA_VERSION}: $(sed -n 's|.*runtimes\.\(kata-[a-z0-9-]*\)\]$|\1|p' /etc/containerd/conf.d/50-kata.toml | tr '\n' ' ')"
+log "kata ${KATA_VERSION}: $(sed -n 's|.*runtimes\.\(kata[a-z0-9-]*\)\]$|\1|p' /etc/containerd/conf.d/50-kata.toml | tr '\n' ' ')"
 ;; esac
 
 # Refuse to hand containerd a config it will reject: a handler drop-in with a

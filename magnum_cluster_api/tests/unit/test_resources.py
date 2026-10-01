@@ -296,3 +296,41 @@ def test_migrate_cluster_failure_domain_removes_empty_value(context, mocker):
         machine_deployment,
     )
     cluster_resource.update.assert_called_once_with()
+
+
+class TestNodeImageRuntimeHandlers:
+    """Which RuntimeClasses a cluster gets, from the image it is built on."""
+
+    def test_plain_image_gets_what_node_bootstrap_installs(self):
+        # No k8s_version: nodeBootstrap installs the runtimes at first boot.
+        handlers = resources.node_image_runtime_handlers({"os_distro": "ubuntu"})
+        assert handlers == resources.NODE_IMAGE_RUNTIME_HANDLERS
+        assert "kata" in handlers
+
+    def test_prebuilt_image_answers_for_itself(self):
+        image = {
+            "k8s_version": "1.36.5",
+            "runsc_version": "release-20260928.0",
+            "kata_handlers": "kata,kata-clh,kata-dragonball,kata-qemu",
+        }
+        assert resources.node_image_runtime_handlers(image) == (
+            "gvisor", "kata", "kata-clh", "kata-dragonball", "kata-qemu",
+        )
+
+    def test_properties_dict_is_read_too(self):
+        image = {"properties": {"k8s_version": "1.36.5", "kata_handlers": "kata-qemu"}}
+        assert resources.node_image_runtime_handlers(image) == ("kata-qemu",)
+
+    def test_image_built_before_kata_existed_gets_no_kata(self):
+        # 1.36.4 / 1.37.0: five kata handlers and gvisor, no bare "kata".
+        image = {
+            "k8s_version": "1.36.4",
+            "runsc_version": "release-20260817.0",
+            "kata_handlers": "kata-clh,kata-clh-runtime-rs,kata-dragonball,kata-qemu,kata-qemu-runtime-rs",
+        }
+        assert "kata" not in resources.node_image_runtime_handlers(image)
+
+    def test_prebuilt_image_without_the_record_falls_back_without_kata(self):
+        handlers = resources.node_image_runtime_handlers({"k8s_version": "1.34.1"})
+        assert "kata" not in handlers
+        assert "gvisor" in handlers and "kata-qemu" in handlers
