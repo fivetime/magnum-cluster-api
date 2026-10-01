@@ -259,12 +259,30 @@ case "$ARCH" in amd64) GVISOR_ARCH=x86_64 ;; arm64) GVISOR_ARCH=aarch64 ;; esac
 GVISOR_URL=${GVISOR_URL:-"${MIRROR:+${MIRROR}/storage.googleapis.com}"}
 GVISOR_URL=${GVISOR_URL:-https://storage.googleapis.com}
 GVISOR_URL="${GVISOR_URL}/gvisor/releases/release/${GVISOR_RELEASE}/${GVISOR_ARCH}"
-for f in runsc containerd-shim-runsc-v1; do
-    fetch "${GVISOR_URL}/${f}" "$f"; fetch "${GVISOR_URL}/${f}.sha512" "${f}.sha512"
-done
-sha512sum -c runsc.sha512 containerd-shim-runsc-v1.sha512
-install -m 755 runsc /usr/bin/runsc
-install -m 755 containerd-shim-runsc-v1 /usr/bin/containerd-shim-runsc-v1
+# Two release layouts. Up to 20260817.0 each binary is published on its own;
+# from 20260831.0 there is one gvisor.tar.zstd holding runsc, the shim and a
+# gvisor-bin/ of sidecars that runsc must find beside its real executable -
+# with the default --sidecar-usage-policy (STRICT) it refuses to start any
+# sandbox without them. The tarball's checksum file is what tells them apart,
+# and that works the same against a mirror. Either way the release lives in
+# /opt/gvisor and /usr/bin holds relative links (runsc follows its own link).
+rm -rf /opt/gvisor; install -d -m 755 /opt/gvisor
+if curl -fsSL --retry 2 -o gvisor.tar.zstd.sha512 "${GVISOR_URL}/gvisor.tar.zstd.sha512" 2>/dev/null; then
+    fetch "${GVISOR_URL}/gvisor.tar.zstd" gvisor.tar.zstd
+    sha512sum -c gvisor.tar.zstd.sha512
+    tar --zstd --no-same-owner -xf gvisor.tar.zstd -C /opt/gvisor
+    [ -x /opt/gvisor/gvisor-bin/gvisor_sentry ] ||
+        die "gvisor ${GVISOR_RELEASE}: no gvisor-bin/gvisor_sentry in the tarball; runsc would start no sandbox"
+    rm -f gvisor.tar.zstd gvisor.tar.zstd.sha512
+else
+    for f in runsc containerd-shim-runsc-v1; do
+        fetch "${GVISOR_URL}/${f}" "$f"; fetch "${GVISOR_URL}/${f}.sha512" "${f}.sha512"
+    done
+    sha512sum -c runsc.sha512 containerd-shim-runsc-v1.sha512
+    install -m 755 runsc containerd-shim-runsc-v1 /opt/gvisor/
+fi
+ln -sfn ../../opt/gvisor/runsc /usr/bin/runsc
+ln -sfn ../../opt/gvisor/containerd-shim-runsc-v1 /usr/bin/containerd-shim-runsc-v1
 printf 'platform = "%s"\n' "$GVISOR_PLATFORM" > /etc/containerd/runsc.toml
 cat > /etc/containerd/conf.d/99-gvisor.toml <<'GVISOR'
 version = 2
