@@ -64,9 +64,9 @@ GH=${GH:-https://github.com}
 
 # Defaults track what openstack-magnum-images resolved for its own builds. They
 # are only defaults: hack/versions.sh moves them, and the env file overrides.
-CONTAINERD_VERSION=${CONTAINERD_VERSION:-2.3.5}
-RUNC_VERSION=${RUNC_VERSION:-1.5.1}
-CRUN_VERSION=${CRUN_VERSION:-1.29.1}
+CONTAINERD_VERSION=${CONTAINERD_VERSION:-2.4.1}
+RUNC_VERSION=${RUNC_VERSION:-1.5.2}
+CRUN_VERSION=${CRUN_VERSION:-1.30.1}
 CNI_PLUGINS_VERSION=${CNI_PLUGINS_VERSION:-1.9.1}
 # crictl tracks the Kubernetes minor; taking the global newest puts a crictl
 # from another minor on the node.
@@ -81,11 +81,12 @@ RUNTIMES=${NODE_BOOTSTRAP_RUNTIMES:-"crun gvisor kata"}
 # Pinned, not "latest": every node fetches on its own, and a rolling pointer
 # would let one cluster's nodes disagree on which runsc they run. The URL path
 # takes the tag WITHOUT the "release-" prefix that `runsc --version` prints:
-# .../release/20260817.0/x86_64/runsc is a 200, .../release/release-20260817.0/
-# is a 404.
-GVISOR_RELEASE=${GVISOR_RELEASE:-20260817.0}
+# .../release/20260928.0/x86_64/gvisor.tar.zstd is a 200,
+# .../release/release-20260928.0/ is a 404. From 20260831.0 a release is one
+# tarball; the gvisor section below handles that and the older layout.
+GVISOR_RELEASE=${GVISOR_RELEASE:-20260928.0}
 GVISOR_PLATFORM=${GVISOR_PLATFORM:-systrap}
-KATA_VERSION=${KATA_VERSION:-4.1.0}
+KATA_VERSION=${KATA_VERSION:-4.2.0}
 
 case "$(uname -m)" in
     x86_64)  ARCH=amd64 ;;
